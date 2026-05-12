@@ -217,6 +217,7 @@ class UpsonicClient(QObject):
                 if has_tool_calls:
                     self.history.messages.append({
                         "role": "assistant",
+                        "content": None,
                         "tool_calls": tool_calls
                     })
 
@@ -235,7 +236,7 @@ class UpsonicClient(QObject):
                         self.history.messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": result
+                            "content": str(result)
                         })
                 else:
                     full_response = ''.join(content_parts)
