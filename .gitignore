@@ -27,6 +27,11 @@ Thumbs.db
 # Config (local machine specific)
 config/settings.ini
 
+# Upsonic
+upsonic_workspace/
+.upsonic/
+*.upsonic
+
 # Screenshots & temp files
 screenshot-*.png
 *.tmp

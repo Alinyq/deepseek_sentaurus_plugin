@@ -9,6 +9,7 @@ Sentaurus Workbench 自定义工具
 
 import sys
 import os
+import json
 import threading
 import configparser
 import markdown
@@ -158,6 +159,7 @@ class DeepSeekTCADGUI(QMainWindow):
         self.create_result_analysis_tab()
         self.create_param_optimization_tab()
         self.create_report_generation_tab()
+        self.create_chat_tab()
 
         # 状态栏
         self.status_bar = QStatusBar()
@@ -617,6 +619,11 @@ class DeepSeekTCADGUI(QMainWindow):
             QMessageBox.information(self, "成功", f"报告已保存到：\n{f}")
 
     # --- 对话框 ---
+    def create_chat_tab(self):
+        from core.chat.chat_widget import ChatWidget
+        chat = ChatWidget()
+        self.tabs.addTab(chat, "AI对话")
+
     def browse_project(self):
         d = QFileDialog.getExistingDirectory(self, "选择项目目录")
         if d:
