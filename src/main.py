@@ -621,7 +621,7 @@ class DeepSeekTCADGUI(QMainWindow):
     # --- 对话框 ---
     def create_chat_tab(self):
         from core.chat.chat_widget import ChatWidget
-        chat = ChatWidget(project_path=self.project_path)
+        chat = ChatWidget()
         self.tabs.addTab(chat, "AI对话")
 
     def browse_project(self):

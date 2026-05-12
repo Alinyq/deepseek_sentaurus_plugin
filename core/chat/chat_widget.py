@@ -1,5 +1,5 @@
 """
-TCAD 聊天组件 - 支持多轮对话、流式输出、项目路径管理
+TCAD 聊天对话框 - 使用Upsonic Agent/Task标准方式
 """
 import os
 import json
@@ -12,8 +12,7 @@ from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QFont
 
 from core.chat.upsonic_client import UpsonicClient
-from core.chat.tcad_tools import create_tcad_tools
-from upsonic.tools import tool
+from core.chat import tcad_tools as tcad_tools_module
 
 
 class ChatMessageBubble(QFrame):
@@ -28,8 +27,10 @@ class ChatMessageBubble(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
+
         bg = "#e3f2fd" if self.is_user else "#f5f5f5"
         self.setStyleSheet(f"QFrame {{ background-color: {bg}; border-radius: 8px; }}")
+
         self.label = QLabel()
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -39,7 +40,8 @@ class ChatMessageBubble(QFrame):
         self.label.setText(text)
 
     def append_text(self, text: str):
-        self.label.setText(self.label.text() + text)
+        current = self.label.text()
+        self.label.setText(current + text)
 
 
 class ChatWorker(QThread):
@@ -55,7 +57,7 @@ class ChatWorker(QThread):
 
 
 class ChatWidget(QWidget):
-    """聊天主组件 - 支持项目路径输入和流式输出"""
+    """聊天主组件 - 支持项目路径管理"""
 
     def __init__(self, project_path: str = None, parent=None):
         super().__init__(parent)
@@ -76,7 +78,7 @@ class ChatWidget(QWidget):
         header = QFrame()
         header.setStyleSheet("background-color: #1976d2; padding: 8px;")
         header_layout = QHBoxLayout(header)
-        title = QLabel(" TCAD AI 智能对话 (多轮对话 + 项目控制)")
+        title = QLabel(" TCAD AI 智能对话 (Upsonic Agent)")
         title.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
@@ -203,9 +205,11 @@ class ChatWidget(QWidget):
         if self.client:
             self.client.project_path = project_path
 
-        tools_dict = create_tcad_tools(project_path)
-        info = tools_dict['get_project_info']()
         try:
+            import subprocess
+            from core.chat.tcad_tools import _run_tool
+            os.environ["TCAD_PROJECT_PATH"] = project_path
+            info = tcad_tools_module.get_project_info()
             data = json.loads(info)
             summary = (f"项目名称: {data.get('project_name', '未知')}\n"
                        f"仿真工具: {', '.join(data.get('tools', []))}\n"
@@ -231,10 +235,6 @@ class ChatWidget(QWidget):
                 'project_path': self.project_path,
             }
 
-            skill_base = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".trae", "skills", "sentaurus-tcad")
-            if os.path.exists(skill_base):
-                client_cfg['skill_path'] = skill_base
-
             self.client = UpsonicClient(client_cfg)
             self.client.token_received.connect(self.on_token)
             self.client.response_complete.connect(self.on_complete)
@@ -242,16 +242,21 @@ class ChatWidget(QWidget):
             self.client.tool_call_started.connect(self.on_tool_call)
             self.client.tool_call_result.connect(self.on_tool_result)
 
-            tools_dict = create_tcad_tools(self.project_path)
-            tools_list = [tool(func) for func in tools_dict.values()]
-            self.client.add_tools(tools_list)
+            # 收集所有@tool装饰的工具函数
+            tools = []
+            for name in dir(tcad_tools_module):
+                obj = getattr(tcad_tools_module, name)
+                if callable(obj) and hasattr(obj, '__upsonic_metadata__'):
+                    tools.append(obj)
+
+            self.client.add_tools(tools)
             self.status.setText(" 就绪")
             self.input.setEnabled(True)
             self.send_btn.setEnabled(True)
 
         except Exception as e:
             self.status.setText(f" 错误: {e}")
-            QMessageBox.warning(self, "警告", f"聊天组件初始化失败：\n{e}\n\n请确保已安装openai库：pip install openai")
+            QMessageBox.warning(self, "警告", f"聊天组件初始化失败：\n{e}\n\n请确保已安装upsonic库")
 
     def send(self):
         msg = self.input.text().strip()
@@ -265,8 +270,6 @@ class ChatWidget(QWidget):
         self.project_path = self.path_input.text() or os.getcwd()
         if self.client:
             self.client.project_path = self.project_path
-            new_tools = create_tcad_tools(self.project_path)
-            self.client.add_tools([tool(func) for func in new_tools.values()])
 
         self._add_bubble(msg, is_user=True)
         self.current_text = ""
