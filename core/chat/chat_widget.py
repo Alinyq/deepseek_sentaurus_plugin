@@ -1,5 +1,5 @@
 """
-TCAD Chat Widget - Multi-turn conversation with Upsonic streaming + project path
+TCAD 聊天组件 - 支持多轮对话、流式输出、项目路径管理
 """
 import os
 import json
@@ -17,7 +17,7 @@ from upsonic.tools import tool
 
 
 class ChatMessageBubble(QFrame):
-    """Message bubble widget"""
+    """消息气泡组件"""
 
     def __init__(self, is_user: bool = False, parent=None):
         super().__init__(parent)
@@ -43,7 +43,7 @@ class ChatMessageBubble(QFrame):
 
 
 class ChatWorker(QThread):
-    """Worker for sending messages"""
+    """消息发送后台线程"""
 
     def __init__(self, client: UpsonicClient, message: str):
         super().__init__()
@@ -55,7 +55,7 @@ class ChatWorker(QThread):
 
 
 class ChatWidget(QWidget):
-    """Main chat widget with project path input and streaming"""
+    """聊天主组件 - 支持项目路径输入和流式输出"""
 
     def __init__(self, project_path: str = None, parent=None):
         super().__init__(parent)
@@ -72,15 +72,16 @@ class ChatWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # 顶部标题栏
         header = QFrame()
         header.setStyleSheet("background-color: #1976d2; padding: 8px;")
         header_layout = QHBoxLayout(header)
-        title = QLabel(" TCAD AI Chat (Multi-turn + Project Control)")
+        title = QLabel(" TCAD AI 智能对话 (多轮对话 + 项目控制)")
         title.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        clear_btn = QPushButton("Clear")
+        clear_btn = QPushButton("清空对话")
         clear_btn.setStyleSheet("""
             QPushButton { background-color: #1565c0; color: white; border: none;
                          padding: 5px 15px; border-radius: 4px; }
@@ -90,10 +91,11 @@ class ChatWidget(QWidget):
         header_layout.addWidget(clear_btn)
         layout.addWidget(header)
 
+        # 项目路径栏
         path_frame = QFrame()
         path_frame.setStyleSheet("QFrame { background-color: #e8f5e9; border-bottom: 1px solid #c8e6c9; padding: 6px; }")
         path_layout = QHBoxLayout(path_frame)
-        path_layout.addWidget(QLabel("Project:"))
+        path_layout.addWidget(QLabel("项目路径："))
         self.path_input = QLineEdit(self.project_path)
         self.path_input.setStyleSheet("""
             QLineEdit { border: 1px solid #a5d6a7; border-radius: 4px; padding: 4px 8px; }
@@ -101,19 +103,20 @@ class ChatWidget(QWidget):
         """)
         path_layout.addWidget(self.path_input)
 
-        browse_btn = QPushButton("Browse")
+        browse_btn = QPushButton("浏览")
         browse_btn.clicked.connect(self._browse_project)
         path_layout.addWidget(browse_btn)
 
-        detect_btn = QPushButton("Detect Project")
+        detect_btn = QPushButton("检测项目")
         detect_btn.clicked.connect(self._detect_project)
         path_layout.addWidget(detect_btn)
 
-        load_btn = QPushButton("Load Info")
+        load_btn = QPushButton("加载信息")
         load_btn.clicked.connect(self._load_project_info)
         path_layout.addWidget(load_btn)
         layout.addWidget(path_frame)
 
+        # 消息显示区
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("border: none; background-color: #fafafa;")
@@ -127,12 +130,13 @@ class ChatWidget(QWidget):
         self.scroll.setWidget(self.msg_container)
         layout.addWidget(self.scroll)
 
+        # 输入区
         input_frame = QFrame()
         input_frame.setStyleSheet("QFrame { background-color: white; border-top: 1px solid #e0e0e0; padding: 10px; }")
         input_layout = QHBoxLayout(input_frame)
 
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Ask me about your TCAD project... (Enter to send)")
+        self.input.setPlaceholderText("请输入您关于TCAD项目的问题... (按回车发送)")
         self.input.setMinimumHeight(40)
         self.input.setStyleSheet("""
             QLineEdit { border: 1px solid #bdbdbd; border-radius: 20px;
@@ -142,7 +146,7 @@ class ChatWidget(QWidget):
         self.input.returnPressed.connect(self.send)
         input_layout.addWidget(self.input)
 
-        self.send_btn = QPushButton("Send")
+        self.send_btn = QPushButton("发送")
         self.send_btn.setMinimumSize(80, 40)
         self.send_btn.setStyleSheet("""
             QPushButton { background-color: #1976d2; color: white; border: none;
@@ -154,41 +158,42 @@ class ChatWidget(QWidget):
         input_layout.addWidget(self.send_btn)
         layout.addWidget(input_frame)
 
+        # 状态栏
         status_frame = QFrame()
         status_frame.setStyleSheet("background-color: #f5f5f5; padding: 5px 10px;")
         s_layout = QHBoxLayout(status_frame)
         s_layout.setContentsMargins(5, 2, 5, 2)
-        self.status = QLabel("Initializing...")
+        self.status = QLabel("正在初始化...")
         self.status.setStyleSheet("color: #666; font-size: 11px;")
         s_layout.addWidget(self.status)
         layout.addWidget(status_frame)
 
     def _browse_project(self):
-        d = QFileDialog.getExistingDirectory(self, "Select SWB Project")
+        d = QFileDialog.getExistingDirectory(self, "选择SWB项目目录")
         if d:
             self.path_input.setText(d)
             self.project_path = d
             if self.client:
                 self.client.project_path = d
-                self.status.setText(f" Project: {d}")
+                self.status.setText(f" 项目: {d}")
 
     def _detect_project(self):
         current = self.path_input.text() or os.getcwd()
         if os.path.isfile(os.path.join(current, "gtree.dat")):
             self.project_path = os.path.abspath(current)
-            self.status.setText(f" Detected: {self.project_path}")
-            self._add_bubble(f"Detected SWB project:\n{self.project_path}", is_user=False)
+            self.status.setText(f" 已检测到: {self.project_path}")
+            self._add_bubble(f"检测到SWB项目：\n{self.project_path}", is_user=False)
         else:
             parent = os.path.dirname(current)
             for root, dirs, files in os.walk(parent):
                 if "gtree.dat" in files:
                     self.project_path = os.path.abspath(root)
                     self.path_input.setText(self.project_path)
-                    self.status.setText(f" Detected: {self.project_path}")
-                    self._add_bubble(f"Detected SWB project:\n{self.project_path}", is_user=False)
+                    self.status.setText(f" 已检测到: {self.project_path}")
+                    self._add_bubble(f"检测到SWB项目：\n{self.project_path}", is_user=False)
                     return
-            self.status.setText(" No SWB project found")
-            self._add_bubble("No SWB project (gtree.dat) found in current directory or parents.", is_user=False)
+            self.status.setText(" 未找到SWB项目")
+            self._add_bubble("在当前目录及父目录中未找到SWB项目(gtree.dat)。", is_user=False)
 
     def _load_project_info(self):
         project_path = self.path_input.text()
@@ -202,15 +207,15 @@ class ChatWidget(QWidget):
         info = tools_dict['get_project_info']()
         try:
             data = json.loads(info)
-            summary = (f"Project: {data.get('project_name', 'Unknown')}\n"
-                       f"Tools: {', '.join(data.get('tools', []))}\n"
-                       f"Experiments: {data.get('experiment_count', 0)}\n"
-                       f"Params: {', '.join(data.get('param_names', []))}\n"
-                       f"Variables: {', '.join(data.get('var_names', []))}")
+            summary = (f"项目名称: {data.get('project_name', '未知')}\n"
+                       f"仿真工具: {', '.join(data.get('tools', []))}\n"
+                       f"实验数量: {data.get('experiment_count', 0)}\n"
+                       f"参数(自变量): {', '.join(data.get('param_names', []))}\n"
+                       f"变量(因变量): {', '.join(data.get('var_names', []))}")
             self._add_bubble(summary, is_user=False)
-            self.status.setText(f" Loaded: {data.get('project_name', '')}")
+            self.status.setText(f" 已加载: {data.get('project_name', '')}")
         except:
-            self._add_bubble(f"Failed to load project info:\n{info}", is_user=False)
+            self._add_bubble(f"加载项目信息失败：\n{info}", is_user=False)
 
     def _init_client(self):
         try:
@@ -234,17 +239,19 @@ class ChatWidget(QWidget):
             self.client.token_received.connect(self.on_token)
             self.client.response_complete.connect(self.on_complete)
             self.client.error_occurred.connect(self.on_error)
+            self.client.tool_call_started.connect(self.on_tool_call)
+            self.client.tool_call_result.connect(self.on_tool_result)
 
             tools_dict = create_tcad_tools(self.project_path)
             tools_list = [tool(func) for func in tools_dict.values()]
             self.client.add_tools(tools_list)
-            self.status.setText(" Ready")
+            self.status.setText(" 就绪")
             self.input.setEnabled(True)
             self.send_btn.setEnabled(True)
 
         except Exception as e:
-            self.status.setText(f" Error: {e}")
-            QMessageBox.warning(self, "Warning", f"Chat init error:\n{e}\n\nInstall upsonic: pip install upsonic")
+            self.status.setText(f" 错误: {e}")
+            QMessageBox.warning(self, "警告", f"聊天组件初始化失败：\n{e}\n\n请确保已安装openai库：pip install openai")
 
     def send(self):
         msg = self.input.text().strip()
@@ -290,15 +297,21 @@ class ChatWidget(QWidget):
     def on_complete(self, response: str):
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
-        self.status.setText(" Ready")
+        self.status.setText(" 就绪")
         self.current_bubble = None
 
     def on_error(self, error: str):
-        self._add_bubble(f"Error: {error}", is_user=False)
+        self._add_bubble(f"错误：{error}", is_user=False)
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
-        self.status.setText(" Error")
+        self.status.setText(" 错误")
         self.current_bubble = None
+
+    def on_tool_call(self, tool_name: str):
+        self.status.setText(f" 正在调用工具: {tool_name}")
+
+    def on_tool_result(self, tool_name: str, result: str):
+        self.status.setText(f" 工具 {tool_name} 执行完成")
 
     def clear_chat(self):
         if self.client:
@@ -307,4 +320,4 @@ class ChatWidget(QWidget):
             item = self.msg_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.status.setText(" Cleared")
+        self.status.setText(" 已清空")

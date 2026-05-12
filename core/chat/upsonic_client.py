@@ -1,17 +1,11 @@
 """
-Upsonic Client Wrapper - Multi-turn conversation with streaming
+Upsonic Client Wrapper - Multi-turn conversation with proper streaming
+Uses OpenAI streaming API directly for real-time token output
 """
 import os
-from pathlib import Path
+import json
+from openai import OpenAI
 from PyQt6.QtCore import QObject, pyqtSignal
-
-try:
-    from upsonic import Agent, Task
-    from upsonic.models.openai import OpenAIChatModel
-    from upsonic.providers.openai import OpenAIProvider
-    UPSONIC_AVAILABLE = True
-except ImportError:
-    UPSONIC_AVAILABLE = False
 
 
 class ConversationHistory:
@@ -41,53 +35,65 @@ class ConversationHistory:
 
 
 class UpsonicClient(QObject):
-    """Upsonic-based multi-turn conversation client"""
+    """OpenAI-based streaming client with tool support"""
 
     token_received = pyqtSignal(str)
     response_complete = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    tool_call_started = pyqtSignal(str)
+    tool_call_result = pyqtSignal(str, str)
 
     def __init__(self, config: dict):
         super().__init__()
         self.config = config
         self.project_path = config.get('project_path', os.getcwd())
         self.history = ConversationHistory()
-        self.agent = None
-        self._init_agent()
+        self.tools = []
+        self.client = None
+        self._init_client()
 
-    def _init_agent(self):
-        if not UPSONIC_AVAILABLE:
-            self.error_occurred.emit("Upsonic not installed. Run: pip install upsonic")
-            return
-
+    def _init_client(self):
         try:
-            model = OpenAIChatModel(
-                model_name=self.config.get('model', 'deepseek-chat'),
-                provider=OpenAIProvider(
-                    api_key=self.config.get('api_key', ''),
-                    base_url=self.config.get('base_url', 'https://api.deepseek.com/v1')
-                )
+            self.client = OpenAI(
+                api_key=self.config.get('api_key', ''),
+                base_url=self.config.get('base_url', 'https://api.deepseek.com/v1')
             )
 
-            self.agent = Agent(model=model, name="TCAD Assistant")
+            model_name = self.config.get('model', 'deepseek-chat')
+            self.model_name = model_name if '/' not in model_name else model_name.split('/')[-1]
 
-            system_prompt = """You are a Sentaurus TCAD simulation expert assistant with full project operation capabilities.
+            system_prompt = f"""你是一个Sentaurus TCAD仿真专家助手。当前项目路径: {self.project_path}
 
-You have these tools:
-- File operations: read_file, write_file, list_files
-- Command execution: run_command (for sde, sdevice, swb commands)
-- Project info: get_project_info, get_project_tree
-- Experiment management: get_experiment_list, get_param_value, set_param_value
-- Run experiments: run_experiment, run_all_experiments
-- Status & errors: get_experiment_status, check_errors
-- Project modification: add_experiment, delete_experiment
-- Read cmd files: get_cmd_files
+你必须按以下流程处理用户的任何问题：
+1. 首先调用 get_project_info 工具获取项目基本信息
+2. 然后调用 get_experiment_list 获取所有实验和参数
+3. 然后调用 get_cmd_files 获取命令文件内容
+4. 基于获取的真实数据回答用户问题
 
-Always:
-1. Check current project context before answering
-2. Use tools to get real data instead of guessing
-3. Respond in the same language as user
-4. Format code/commands in markdown code blocks"""
+你有以下工具可以使用：
+- get_project_info: 获取SWB项目摘要（工具、实验数、参数名）
+- get_experiment_list: 获取所有实验及其参数值（自变量）
+- get_cmd_files: 获取所有.cmd命令文件内容（SDE/SDEVICE/SPROCESS配置）
+- get_param_names: 获取所有参数名
+- get_param_value: 获取特定实验的特定参数值
+- set_param_value: 修改实验参数值
+- get_experiment_status: 获取实验状态
+- run_experiment: 运行特定实验
+- run_all_experiments: 运行所有实验
+- check_errors: 检查实验错误
+- add_experiment: 添加新实验
+- delete_experiment: 删除实验
+- get_node_list: 获取所有节点ID
+- read_file: 读取文件内容
+- write_file: 写入文件
+- list_files: 列出目录内容
+- run_shell_command: 执行shell命令
+
+重要规则：
+1. 回答任何问题前，必须先调用工具获取真实数据
+2. 绝对不要凭猜测或记忆回答
+3. 用中文回复用户
+4. 代码和命令使用markdown格式"""
 
             self.history.add_system(system_prompt)
 
@@ -96,44 +102,153 @@ Always:
                 skill_file = os.path.join(skill_path, "SKILL.md")
                 if os.path.exists(skill_file):
                     with open(skill_file, 'r', encoding='utf-8') as f:
-                        skill_content = f.read()[:8000]
-                    self.history.add_system(f"TCAD Skill Reference (excerpt):\n{skill_content}")
+                        skill_content = f.read()[:5000]
+                    self.history.add_system(f"TCAD技能参考:\n{skill_content}")
 
         except Exception as e:
-            self.error_occurred.emit(f"Init error: {e}")
+            self.error_occurred.emit(f"初始化错误: {e}")
 
     def add_tools(self, tools: list):
-        if self.agent and tools:
-            self.agent.tools = tools
+        """Add tools (list of decorated functions from upsonic.tools.tool)"""
+        self.tools = tools
+
+    def _build_tool_schemas(self):
+        """Convert upsonic tools to OpenAI function schemas"""
+        schemas = []
+        for t in self.tools:
+            func = t.func if hasattr(t, 'func') else t
+            if hasattr(func, '__wrapped__'):
+                func = func.__wrapped__
+            
+            schema = {
+                "type": "function",
+                "function": {
+                    "name": func.__name__,
+                    "description": func.__doc__ or "",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            }
+
+            try:
+                import inspect
+                sig = inspect.signature(func)
+                for name, param in sig.parameters.items():
+                    if param.default == inspect.Parameter.empty:
+                        schema["function"]["parameters"]["required"].append(name)
+                        schema["function"]["parameters"]["properties"][name] = {
+                            "type": "string",
+                            "description": ""
+                        }
+                    else:
+                        schema["function"]["parameters"]["properties"][name] = {
+                            "type": "string",
+                            "default": str(param.default)
+                        }
+            except:
+                pass
+
+            schemas.append(schema)
+        return schemas
 
     def send_message(self, message: str):
-        if not self.agent:
-            self.error_occurred.emit("Agent not initialized")
+        """Send message with streaming and tool support"""
+        if not self.client:
+            self.error_occurred.emit("客户端未初始化")
             return
 
         try:
             self.history.add_user(message)
 
-            task = Task(description=message)
+            for attempt in range(5):
+                messages = self.history.get_messages()
+                tool_schemas = self._build_tool_schemas()
 
-            result = self.agent.do(task)
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    tools=tool_schemas if tool_schemas else None,
+                    tool_choice="auto",
+                    stream=True,
+                    temperature=0.7,
+                    max_tokens=4096
+                )
 
-            if hasattr(result, 'response'):
-                response_text = result.response
-            elif isinstance(result, str):
-                response_text = result
-            else:
-                response_text = str(result)
+                tool_calls = []
+                content_parts = []
+                has_tool_calls = False
 
-            for char in response_text:
-                self.token_received.emit(char)
+                for chunk in response:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if not delta:
+                        continue
 
-            self.history.add_assistant(response_text)
-            self.response_complete.emit(response_text)
+                    if delta.tool_calls:
+                        has_tool_calls = True
+                        for tc in delta.tool_calls:
+                            if tc.index is not None:
+                                while len(tool_calls) <= tc.index:
+                                    tool_calls.append({"id": "", "name": "", "arguments": ""})
+                                if tc.id:
+                                    tool_calls[tc.index]["id"] = tc.id
+                                if tc.function and tc.function.name:
+                                    tool_calls[tc.index]["name"] = tc.function.name
+                                if tc.function and tc.function.arguments:
+                                    tool_calls[tc.index]["arguments"] += tc.function.arguments
+
+                    if delta.content:
+                        content_parts.append(delta.content)
+                        self.token_received.emit(delta.content)
+
+                if has_tool_calls:
+                    self.history.messages.append({
+                        "role": "assistant",
+                        "tool_calls": tool_calls
+                    })
+
+                    for tc in tool_calls:
+                        tool_name = tc["name"]
+                        try:
+                            args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                        except:
+                            args = {}
+
+                        self.tool_call_started.emit(f"调用工具: {tool_name}")
+
+                        result = self._call_tool(tool_name, args)
+                        self.tool_call_result.emit(tool_name, result)
+
+                        self.history.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result
+                        })
+                else:
+                    full_response = ''.join(content_parts)
+                    self.history.add_assistant(full_response)
+                    self.response_complete.emit(full_response)
+                    return
 
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
+            error_msg = f"错误: {str(e)}"
             self.error_occurred.emit(error_msg)
+
+    def _call_tool(self, tool_name: str, args: dict) -> str:
+        """Call a tool by name with arguments"""
+        for t in self.tools:
+            func = t.func if hasattr(t, 'func') else t
+            if hasattr(func, '__wrapped__'):
+                func = func.__wrapped__
+            if func.__name__ == tool_name:
+                try:
+                    result = func(**args)
+                    return str(result)
+                except Exception as e:
+                    return f"工具执行错误: {e}"
+        return f"未知工具: {tool_name}"
 
     def clear_history(self):
         self.history.clear()
