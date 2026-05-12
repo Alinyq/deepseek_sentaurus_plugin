@@ -3,8 +3,9 @@ Upsonic Client - 使用标准Upsonic Agent/Task方式 + 流式输出
 """
 import os
 import json
-import asyncio
 from upsonic import Agent, Task
+from upsonic.models.openai import OpenAIChatModel
+from upsonic.providers.openai import OpenAIProvider
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 
 
@@ -41,10 +42,7 @@ class StreamWorker(QThread):
             self.full_response = ""
             self.agent.add_tools(self.tools)
 
-            # 使用print_do会自动打印到stdout，我们需要自己捕获
-            # 所以改用do()方法 + 手动流式输出
-            
-            # Upsonic的stream方法返回generator
+            # 使用Upsonic的stream方法
             if hasattr(self.agent, 'stream'):
                 for chunk in self.agent.stream(self.task):
                     if chunk:
@@ -77,11 +75,12 @@ class UpsonicClient(QObject):
         self.project_path = config.get('project_path', os.getcwd())
         self.state = ConversationState()
         self.agent = None
-        self.worker = None
         self._init_client()
 
     def _init_client(self):
         try:
+            api_key = self.config.get('api_key', '')
+            base_url = self.config.get('base_url', 'https://api.deepseek.com/v1')
             model_name = self.config.get('model', 'deepseek-chat')
 
             system_prompt = f"""你是一个Sentaurus TCAD仿真专家助手。当前项目路径: {self.project_path}
@@ -98,8 +97,17 @@ class UpsonicClient(QObject):
 3. 用中文回复用户
 4. 代码和命令使用markdown格式"""
 
+            # 创建OpenAI兼容模型
+            model = OpenAIChatModel(
+                model_name=model_name,
+                provider=OpenAIProvider(
+                    api_key=api_key,
+                    base_url=base_url
+                )
+            )
+
             self.agent = Agent(
-                model=model_name,
+                model=model,
                 name="TCAD Assistant",
                 instructions=system_prompt,
                 debug=False
@@ -107,6 +115,8 @@ class UpsonicClient(QObject):
 
         except Exception as e:
             self.error_occurred.emit(f"初始化错误: {e}")
+            import traceback
+            traceback.print_exc()
 
     def add_tools(self, tools: list):
         """添加Upsonic工具列表"""
