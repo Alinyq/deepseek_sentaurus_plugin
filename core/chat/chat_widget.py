@@ -1,22 +1,23 @@
 """
-TCAD Chat Dialog - Multi-turn conversation with Upsonic streaming output
+TCAD Chat Widget - Multi-turn conversation with Upsonic streaming + project path
 """
 import os
+import json
 import configparser
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
-    QPushButton, QLabel, QFrame, QScrollArea, QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
+    QPushButton, QLabel, QFrame, QScrollArea, QMessageBox, QFileDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QFont
 
 from core.chat.upsonic_client import UpsonicClient
 from core.chat.tcad_tools import (
-    read_file, write_file, list_files, run_command,
+    read_file, write_file, list_files, run_shell_command,
     get_project_info, get_experiment_list, get_cmd_files,
-    get_param_value, set_param_value, run_experiment,
-    run_all_experiments, get_experiment_status, check_errors,
-    get_project_tree, add_experiment, delete_experiment
+    get_param_value, set_param_value, get_param_names,
+    run_experiment, run_all_experiments, get_experiment_status,
+    check_errors, add_experiment, delete_experiment, get_node_list
 )
 from upsonic.tools import tool
 
@@ -33,10 +34,8 @@ class ChatMessageBubble(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
-
         bg = "#e3f2fd" if self.is_user else "#f5f5f5"
         self.setStyleSheet(f"QFrame {{ background-color: {bg}; border-radius: 8px; }}")
-
         self.label = QLabel()
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -46,12 +45,11 @@ class ChatMessageBubble(QFrame):
         self.label.setText(text)
 
     def append_text(self, text: str):
-        current = self.label.text()
-        self.label.setText(current + text)
+        self.label.setText(self.label.text() + text)
 
 
 class ChatWorker(QThread):
-    """Worker thread for sending messages"""
+    """Worker for sending messages"""
 
     def __init__(self, client: UpsonicClient, message: str):
         super().__init__()
@@ -63,10 +61,11 @@ class ChatWorker(QThread):
 
 
 class ChatWidget(QWidget):
-    """Main chat widget with streaming"""
+    """Main chat widget with project path input and streaming"""
 
-    def __init__(self, parent=None):
+    def __init__(self, project_path: str = None, parent=None):
         super().__init__(parent)
+        self.project_path = project_path or os.getcwd()
         self.client = None
         self.worker = None
         self.current_bubble = None
@@ -81,9 +80,9 @@ class ChatWidget(QWidget):
 
         # Header
         header = QFrame()
-        header.setStyleSheet("background-color: #1976d2; padding: 10px;")
+        header.setStyleSheet("background-color: #1976d2; padding: 8px;")
         header_layout = QHBoxLayout(header)
-        title = QLabel(" TCAD AI Multi-turn Chat (Upsonic + DeepSeek)")
+        title = QLabel(" TCAD AI Chat (Multi-turn + Project Control)")
         title.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
@@ -98,7 +97,32 @@ class ChatWidget(QWidget):
         header_layout.addWidget(clear_btn)
         layout.addWidget(header)
 
-        # Messages
+        # Project path bar
+        path_frame = QFrame()
+        path_frame.setStyleSheet("QFrame { background-color: #e8f5e9; border-bottom: 1px solid #c8e6c9; padding: 6px; }")
+        path_layout = QHBoxLayout(path_frame)
+        path_layout.addWidget(QLabel("Project:"))
+        self.path_input = QLineEdit(self.project_path)
+        self.path_input.setStyleSheet("""
+            QLineEdit { border: 1px solid #a5d6a7; border-radius: 4px; padding: 4px 8px; }
+            QLineEdit:focus { border-color: #4caf50; }
+        """)
+        path_layout.addWidget(self.path_input)
+
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self._browse_project)
+        path_layout.addWidget(browse_btn)
+
+        detect_btn = QPushButton("Detect Project")
+        detect_btn.clicked.connect(self._detect_project)
+        path_layout.addWidget(detect_btn)
+
+        load_btn = QPushButton("Load Info")
+        load_btn.clicked.connect(self._load_project_info)
+        path_layout.addWidget(load_btn)
+        layout.addWidget(path_frame)
+
+        # Messages area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("border: none; background-color: #fafafa;")
@@ -112,13 +136,13 @@ class ChatWidget(QWidget):
         self.scroll.setWidget(self.msg_container)
         layout.addWidget(self.scroll)
 
-        # Input
+        # Input area
         input_frame = QFrame()
         input_frame.setStyleSheet("QFrame { background-color: white; border-top: 1px solid #e0e0e0; padding: 10px; }")
         input_layout = QHBoxLayout(input_frame)
 
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Type message... (Enter to send)")
+        self.input.setPlaceholderText("Ask me about your TCAD project... (Enter to send)")
         self.input.setMinimumHeight(40)
         self.input.setStyleSheet("""
             QLineEdit { border: 1px solid #bdbdbd; border-radius: 20px;
@@ -140,7 +164,7 @@ class ChatWidget(QWidget):
         input_layout.addWidget(self.send_btn)
         layout.addWidget(input_frame)
 
-        # Status
+        # Status bar
         status_frame = QFrame()
         status_frame.setStyleSheet("background-color: #f5f5f5; padding: 5px 10px;")
         s_layout = QHBoxLayout(status_frame)
@@ -149,6 +173,53 @@ class ChatWidget(QWidget):
         self.status.setStyleSheet("color: #666; font-size: 11px;")
         s_layout.addWidget(self.status)
         layout.addWidget(status_frame)
+
+    def _browse_project(self):
+        d = QFileDialog.getExistingDirectory(self, "Select SWB Project")
+        if d:
+            self.path_input.setText(d)
+            self.project_path = d
+            if self.client:
+                self.client.project_path = d
+                self.status.setText(f" Project: {d}")
+
+    def _detect_project(self):
+        current = self.path_input.text() or os.getcwd()
+        if os.path.isfile(os.path.join(current, "gtree.dat")):
+            self.project_path = os.path.abspath(current)
+            self.status.setText(f" Detected: {self.project_path}")
+            self._add_bubble(f"Detected SWB project:\n{self.project_path}", is_user=False)
+        else:
+            parent = os.path.dirname(current)
+            for root, dirs, files in os.walk(parent):
+                if "gtree.dat" in files:
+                    self.project_path = os.path.abspath(root)
+                    self.path_input.setText(self.project_path)
+                    self.status.setText(f" Detected: {self.project_path}")
+                    self._add_bubble(f"Detected SWB project:\n{self.project_path}", is_user=False)
+                    return
+            self.status.setText(" No SWB project found")
+            self._add_bubble("No SWB project (gtree.dat) found in current directory or parents.", is_user=False)
+
+    def _load_project_info(self):
+        project_path = self.path_input.text()
+        if not project_path:
+            project_path = os.getcwd()
+        self.project_path = project_path
+        if self.client:
+            self.client.project_path = project_path
+
+        info = get_project_info(project_path)
+        try:
+            data = json.loads(info)
+            summary = (f"Project: {data.get('project_name', 'Unknown')}\n"
+                       f"Tools: {', '.join(data.get('tools', []))}\n"
+                       f"Experiments: {data.get('experiment_count', 0)}\n"
+                       f"Params: {len(data.get('param_names', []))}")
+            self._add_bubble(summary, is_user=False)
+            self.status.setText(f" Loaded: {data.get('project_name', '')}")
+        except:
+            self._add_bubble(f"Failed to load project info:\n{info}", is_user=False)
 
     def _init_client(self):
         try:
@@ -161,6 +232,7 @@ class ChatWidget(QWidget):
                 'api_key': config.get('deepseek', 'api_key', fallback=''),
                 'base_url': config.get('deepseek', 'base_url', fallback='https://api.deepseek.com') + '/v1',
                 'model': config.get('deepseek', 'model', fallback='deepseek-chat'),
+                'project_path': self.project_path,
             }
 
             skill_base = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".trae", "skills", "sentaurus-tcad")
@@ -172,23 +244,25 @@ class ChatWidget(QWidget):
             self.client.response_complete.connect(self.on_complete)
             self.client.error_occurred.connect(self.on_error)
 
+            pp = self.project_path
+
             tools = [
                 tool(read_file),
                 tool(write_file),
                 tool(list_files),
-                tool(run_command),
-                tool(get_project_info),
-                tool(get_experiment_list),
-                tool(get_cmd_files),
-                tool(get_param_value),
-                tool(set_param_value),
-                tool(run_experiment),
-                tool(run_all_experiments),
-                tool(get_experiment_status),
-                tool(check_errors),
-                tool(get_project_tree),
-                tool(add_experiment),
-                tool(delete_experiment),
+                tool(run_shell_command),
+                lambda: get_project_info(pp),
+                lambda: get_experiment_list(pp),
+                lambda: get_cmd_files(pp),
+                lambda pname="": get_param_value(pp, 0, pname) if pname else "Need param_name",
+                lambda exp=0, param="", value="": set_param_value(pp, exp, param, value) if param and value else "Need exp_index, param_name, new_value",
+                lambda exp=0: run_experiment(pp, exp),
+                lambda: run_all_experiments(pp),
+                lambda: get_experiment_status(pp),
+                lambda: check_errors(pp),
+                lambda pj="{}": add_experiment(pp, pj) if pj != "{}" else "Need params_json",
+                lambda exp=0: delete_experiment(pp, exp),
+                lambda: get_node_list(pp),
             ]
             self.client.add_tools(tools)
             self.status.setText(" Ready")
@@ -197,7 +271,7 @@ class ChatWidget(QWidget):
 
         except Exception as e:
             self.status.setText(f" Error: {e}")
-            QMessageBox.warning(self, "Warning", f"Chat init failed:\n{e}\n\nMake sure upsonic is installed: pip install upsonic")
+            QMessageBox.warning(self, "Warning", f"Chat init error:\n{e}\n\nInstall upsonic: pip install upsonic")
 
     def send(self):
         msg = self.input.text().strip()
@@ -207,6 +281,10 @@ class ChatWidget(QWidget):
         self.input.clear()
         self.input.setEnabled(False)
         self.send_btn.setEnabled(False)
+
+        self.project_path = self.path_input.text() or os.getcwd()
+        if self.client:
+            self.client.project_path = self.project_path
 
         self._add_bubble(msg, is_user=True)
         self.current_text = ""

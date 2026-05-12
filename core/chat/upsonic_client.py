@@ -50,6 +50,7 @@ class UpsonicClient(QObject):
     def __init__(self, config: dict):
         super().__init__()
         self.config = config
+        self.project_path = config.get('project_path', os.getcwd())
         self.history = ConversationHistory()
         self.agent = None
         self._init_agent()
