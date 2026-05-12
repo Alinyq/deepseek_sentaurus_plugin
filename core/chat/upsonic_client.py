@@ -247,19 +247,5 @@ class UpsonicClient(QObject):
             error_msg = f"错误: {str(e)}"
             self.error_occurred.emit(error_msg)
 
-    def _call_tool(self, tool_name: str, args: dict) -> str:
-        """Call a tool by name with arguments"""
-        for t in self.tools:
-            func = t.func if hasattr(t, 'func') else t
-            if hasattr(func, '__wrapped__'):
-                func = func.__wrapped__
-            if func.__name__ == tool_name:
-                try:
-                    result = func(**args)
-                    return str(result)
-                except Exception as e:
-                    return f"工具执行错误: {e}"
-        return f"未知工具: {tool_name}"
-
     def clear_history(self):
         self.history.clear()
