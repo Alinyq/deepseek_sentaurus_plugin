@@ -1,11 +1,11 @@
 """
-Upsonic Client - 使用标准Upsonic Agent/Task方式
-支持流式输出展示工具调用过程
+Upsonic Client - 使用标准Upsonic Agent/Task方式 + 流式输出
 """
 import os
 import json
+import asyncio
 from upsonic import Agent, Task
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, QThread
 
 
 class ConversationState:
@@ -13,15 +13,57 @@ class ConversationState:
 
     def __init__(self):
         self.system_prompt = ""
-        self.history = []
         self.all_tools = []
 
     def clear(self):
-        self.history = []
+        self.all_tools = []
+
+
+class StreamWorker(QThread):
+    """流式输出工作线程"""
+
+    token_received = pyqtSignal(str)
+    response_complete = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
+    tool_call_started = pyqtSignal(str)
+    tool_call_result = pyqtSignal(str, str)
+
+    def __init__(self, agent: Agent, task: Task, tools: list):
+        super().__init__()
+        self.agent = agent
+        self.task = task
+        self.tools = tools
+        self.full_response = ""
+
+    def run(self):
+        """使用同步方式运行agent并捕获流式输出"""
+        try:
+            self.full_response = ""
+            self.agent.add_tools(self.tools)
+
+            # 使用print_do会自动打印到stdout，我们需要自己捕获
+            # 所以改用do()方法 + 手动流式输出
+            
+            # Upsonic的stream方法返回generator
+            if hasattr(self.agent, 'stream'):
+                for chunk in self.agent.stream(self.task):
+                    if chunk:
+                        self.full_response += str(chunk)
+                        self.token_received.emit(str(chunk))
+            else:
+                # 如果没有stream方法，使用do()
+                result = self.agent.do(self.task)
+                self.full_response = str(result)
+                self.token_received.emit(self.full_response)
+
+            self.response_complete.emit(self.full_response)
+
+        except Exception as e:
+            self.error_occurred.emit(f"执行错误: {str(e)}")
 
 
 class UpsonicClient(QObject):
-    """Upsonic客户端 - 使用Agent/Task方式管理工具和多轮对话"""
+    """Upsonic客户端 - 使用Agent/Task方式 + 流式输出"""
 
     token_received = pyqtSignal(str)
     response_complete = pyqtSignal(str)
@@ -35,15 +77,12 @@ class UpsonicClient(QObject):
         self.project_path = config.get('project_path', os.getcwd())
         self.state = ConversationState()
         self.agent = None
+        self.worker = None
         self._init_client()
 
     def _init_client(self):
         try:
             model_name = self.config.get('model', 'deepseek-chat')
-            self.agent = Agent(
-                model=model_name,
-                name="TCAD Assistant"
-            )
 
             system_prompt = f"""你是一个Sentaurus TCAD仿真专家助手。当前项目路径: {self.project_path}
 
@@ -59,7 +98,12 @@ class UpsonicClient(QObject):
 3. 用中文回复用户
 4. 代码和命令使用markdown格式"""
 
-            self.state.system_prompt = system_prompt
+            self.agent = Agent(
+                model=model_name,
+                name="TCAD Assistant",
+                instructions=system_prompt,
+                debug=False
+            )
 
         except Exception as e:
             self.error_occurred.emit(f"初始化错误: {e}")
@@ -69,26 +113,22 @@ class UpsonicClient(QObject):
         self.state.all_tools = tools
 
     def send_message(self, message: str):
-        """发送消息（同步调用，完成后发射信号）"""
-        try:
-            task_description = message
+        """发送消息（使用流式输出）"""
+        if not self.agent:
+            self.error_occurred.emit("Agent未初始化")
+            return
 
-            task = Task(
-                description=task_description,
-                tools=self.state.all_tools
-            )
+        task = Task(description=message)
 
-            self.tool_call_started.emit("正在处理请求...")
-
-            result = self.agent.do(task)
-
-            full_response = str(result)
-            self.token_received.emit(full_response)
-            self.response_complete.emit(full_response)
-
-        except Exception as e:
-            error_msg = f"错误: {str(e)}"
-            self.error_occurred.emit(error_msg)
+        self.worker = StreamWorker(
+            self.agent,
+            task,
+            self.state.all_tools
+        )
+        self.worker.token_received.connect(self.token_received.emit)
+        self.worker.response_complete.connect(self.response_complete.emit)
+        self.worker.error_occurred.connect(self.error_occurred.emit)
+        self.worker.start()
 
     def clear_history(self):
         self.state.clear()
