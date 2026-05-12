@@ -12,13 +12,7 @@ from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QFont
 
 from core.chat.upsonic_client import UpsonicClient
-from core.chat.tcad_tools import (
-    read_file, write_file, list_files, run_shell_command,
-    get_project_info, get_experiment_list, get_cmd_files,
-    get_param_value, set_param_value, get_param_names,
-    run_experiment, run_all_experiments, get_experiment_status,
-    check_errors, add_experiment, delete_experiment, get_node_list
-)
+from core.chat.tcad_tools import create_tcad_tools
 from upsonic.tools import tool
 
 
@@ -78,7 +72,6 @@ class ChatWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
         header = QFrame()
         header.setStyleSheet("background-color: #1976d2; padding: 8px;")
         header_layout = QHBoxLayout(header)
@@ -97,7 +90,6 @@ class ChatWidget(QWidget):
         header_layout.addWidget(clear_btn)
         layout.addWidget(header)
 
-        # Project path bar
         path_frame = QFrame()
         path_frame.setStyleSheet("QFrame { background-color: #e8f5e9; border-bottom: 1px solid #c8e6c9; padding: 6px; }")
         path_layout = QHBoxLayout(path_frame)
@@ -122,7 +114,6 @@ class ChatWidget(QWidget):
         path_layout.addWidget(load_btn)
         layout.addWidget(path_frame)
 
-        # Messages area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("border: none; background-color: #fafafa;")
@@ -136,7 +127,6 @@ class ChatWidget(QWidget):
         self.scroll.setWidget(self.msg_container)
         layout.addWidget(self.scroll)
 
-        # Input area
         input_frame = QFrame()
         input_frame.setStyleSheet("QFrame { background-color: white; border-top: 1px solid #e0e0e0; padding: 10px; }")
         input_layout = QHBoxLayout(input_frame)
@@ -164,7 +154,6 @@ class ChatWidget(QWidget):
         input_layout.addWidget(self.send_btn)
         layout.addWidget(input_frame)
 
-        # Status bar
         status_frame = QFrame()
         status_frame.setStyleSheet("background-color: #f5f5f5; padding: 5px 10px;")
         s_layout = QHBoxLayout(status_frame)
@@ -209,13 +198,15 @@ class ChatWidget(QWidget):
         if self.client:
             self.client.project_path = project_path
 
-        info = get_project_info(project_path)
+        tools_dict = create_tcad_tools(project_path)
+        info = tools_dict['get_project_info']()
         try:
             data = json.loads(info)
             summary = (f"Project: {data.get('project_name', 'Unknown')}\n"
                        f"Tools: {', '.join(data.get('tools', []))}\n"
                        f"Experiments: {data.get('experiment_count', 0)}\n"
-                       f"Params: {len(data.get('param_names', []))}")
+                       f"Params: {', '.join(data.get('param_names', []))}\n"
+                       f"Variables: {', '.join(data.get('var_names', []))}")
             self._add_bubble(summary, is_user=False)
             self.status.setText(f" Loaded: {data.get('project_name', '')}")
         except:
@@ -244,27 +235,9 @@ class ChatWidget(QWidget):
             self.client.response_complete.connect(self.on_complete)
             self.client.error_occurred.connect(self.on_error)
 
-            pp = self.project_path
-
-            tools = [
-                tool(read_file),
-                tool(write_file),
-                tool(list_files),
-                tool(run_shell_command),
-                lambda: get_project_info(pp),
-                lambda: get_experiment_list(pp),
-                lambda: get_cmd_files(pp),
-                lambda pname="": get_param_value(pp, 0, pname) if pname else "Need param_name",
-                lambda exp=0, param="", value="": set_param_value(pp, exp, param, value) if param and value else "Need exp_index, param_name, new_value",
-                lambda exp=0: run_experiment(pp, exp),
-                lambda: run_all_experiments(pp),
-                lambda: get_experiment_status(pp),
-                lambda: check_errors(pp),
-                lambda pj="{}": add_experiment(pp, pj) if pj != "{}" else "Need params_json",
-                lambda exp=0: delete_experiment(pp, exp),
-                lambda: get_node_list(pp),
-            ]
-            self.client.add_tools(tools)
+            tools_dict = create_tcad_tools(self.project_path)
+            tools_list = [tool(func) for func in tools_dict.values()]
+            self.client.add_tools(tools_list)
             self.status.setText(" Ready")
             self.input.setEnabled(True)
             self.send_btn.setEnabled(True)
@@ -285,6 +258,8 @@ class ChatWidget(QWidget):
         self.project_path = self.path_input.text() or os.getcwd()
         if self.client:
             self.client.project_path = self.project_path
+            new_tools = create_tcad_tools(self.project_path)
+            self.client.add_tools([tool(func) for func in new_tools.values()])
 
         self._add_bubble(msg, is_user=True)
         self.current_text = ""
