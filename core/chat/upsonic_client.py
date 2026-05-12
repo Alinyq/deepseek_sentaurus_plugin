@@ -113,18 +113,21 @@ class UpsonicClient(QObject):
         self.tools = tools
 
     def _build_tool_schemas(self):
-        """Convert upsonic tools to OpenAI function schemas"""
+        """Convert tools to OpenAI function schemas"""
         schemas = []
         for t in self.tools:
             func = t.func if hasattr(t, 'func') else t
             if hasattr(func, '__wrapped__'):
                 func = func.__wrapped__
             
+            import inspect
+            sig = inspect.signature(func)
+            
             schema = {
                 "type": "function",
                 "function": {
                     "name": func.__name__,
-                    "description": func.__doc__ or "",
+                    "description": (func.__doc__ or "").strip().split('\n')[0],
                     "parameters": {
                         "type": "object",
                         "properties": {},
@@ -133,26 +136,34 @@ class UpsonicClient(QObject):
                 }
             }
 
-            try:
-                import inspect
-                sig = inspect.signature(func)
-                for name, param in sig.parameters.items():
-                    if param.default == inspect.Parameter.empty:
-                        schema["function"]["parameters"]["required"].append(name)
-                        schema["function"]["parameters"]["properties"][name] = {
-                            "type": "string",
-                            "description": ""
-                        }
-                    else:
-                        schema["function"]["parameters"]["properties"][name] = {
-                            "type": "string",
-                            "default": str(param.default)
-                        }
-            except:
-                pass
+            for name, param in sig.parameters.items():
+                schema["function"]["parameters"]["properties"][name] = {
+                    "type": "string",
+                    "description": ""
+                }
+                if param.default == inspect.Parameter.empty:
+                    schema["function"]["parameters"]["required"].append(name)
 
             schemas.append(schema)
         return schemas
+
+    def _call_tool(self, tool_name: str, args: dict) -> str:
+        """Call a tool by name with arguments, filtering invalid params"""
+        for t in self.tools:
+            func = t.func if hasattr(t, 'func') else t
+            if hasattr(func, '__wrapped__'):
+                func = func.__wrapped__
+            if func.__name__ == tool_name:
+                try:
+                    import inspect
+                    sig = inspect.signature(func)
+                    valid_params = set(sig.parameters.keys())
+                    filtered_args = {k: v for k, v in args.items() if k in valid_params}
+                    result = func(**filtered_args)
+                    return str(result)
+                except Exception as e:
+                    return f"工具执行错误: {e}"
+        return f"未知工具: {tool_name}"
 
     def send_message(self, message: str):
         """Send message with streaming and tool support"""
