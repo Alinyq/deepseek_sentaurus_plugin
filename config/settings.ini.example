@@ -1,0 +1,26 @@
+# DeepSeek TCAD Configuration
+
+[deepseek]
+api_key = sk-YOUR_API_KEY_HERE
+model = deepseek-chat
+base_url = https://api.deepseek.com
+max_tokens = 384000
+temperature = 0.7
+stream = True
+
+[tcad]
+gpythonsh_path = gpythonsh
+swb_path = swb
+
+[output]
+report_dir = outputs/analysis_reports
+optimization_dir = outputs/optimization_suggestions
+tcad_report_dir = outputs/tcad_reports
+
+[cache]
+session_dir = cache/sessions
+api_cache_dir = cache/api_cache
+
+[log]
+log_file = logs/deepseek_tcad.log
+log_level = INFO

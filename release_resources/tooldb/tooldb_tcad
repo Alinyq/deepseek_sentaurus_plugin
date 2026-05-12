@@ -1,0 +1,22 @@
+# tool: deepseek_tcad
+set WB_tool(deepseek_tcad,category) utility
+set WB_tool(deepseek_tcad,visual_category) utility
+set WB_tool(deepseek_tcad,acronym) ai
+set WB_tool(deepseek_tcad,after) all
+set WB_binaries(tool,deepseek_tcad) /home/tcad/miniforge-pypy3/envs/tcad/bin/python
+set Icon(deepseek_tcad) $app_data(icon_dir)/deepseek.gif
+set WB_tool(deepseek_tcad,setup) { os_ln_rel @commands@ n@node@_ai.py "@pwdout@/@nodedir@" }
+set WB_tool(deepseek_tcad,epilogue) { extract_vars "$nodedir" @stdout@ @node@ }
+set WB_tool(deepseek_tcad,cmd_line) "n@node@_ai.py"
+set WB_tool(deepseek_tcad,input) [list commands pref]
+set WB_tool(deepseek_tcad,input,commands,label)  "DeepSeek AI Commands..."
+set WB_tool(deepseek_tcad,input,commands,editor)  text
+set WB_tool(deepseek_tcad,input,commands,file)   @tool_label@_ai.py
+set WB_tool(deepseek_tcad,input,pref,file)  @tool_label@_ai.prf
+set WB_tool(deepseek_tcad,input,pref,label)  "Preferences..."
+set WB_tool(deepseek_tcad,input,pref,editor)  pref
+set WB_tool(deepseek_tcad,output) [list]
+set WB_tool(deepseek_tcad,output,files) "n@node@_* pp@node@_* *_n@node@_*"
+set WB_tool(deepseek_tcad,exec_dependency) strict
+set WB_tool(deepseek_tcad,available) { return 1 }
+lappend WB_tool(all) deepseek_tcad
