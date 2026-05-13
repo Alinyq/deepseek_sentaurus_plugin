@@ -234,17 +234,24 @@ class TCADProjectParser:
     def _parse_swb_project(self, mode="basic"):
         """通过gpythonsh执行脚本，获取swbpy2解析的实验信息"""
         try:
+            if not os.path.exists(GET_INFO_SCRIPT):
+                return {"error": f"脚本不存在: {GET_INFO_SCRIPT}"}
             result = subprocess.run(
                 ["gpythonsh", GET_INFO_SCRIPT, self.project_path, mode],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60
             )
             if result.returncode == 0 and result.stdout.strip():
                 return json.loads(result.stdout)
-            return None
-        except Exception:
-            return None
+            else:
+                stderr = result.stderr.strip() if result.stderr else "(无stderr)"
+                stdout = result.stdout.strip() if result.stdout else "(无stdout)"
+                return {"error": f"gpythonsh执行失败 (rc={result.returncode})\nstdout: {stdout}\nstderr: {stderr}"}
+        except subprocess.TimeoutExpired:
+            return {"error": "gpythonsh执行超时"}
+        except Exception as e:
+            return {"error": f"执行异常: {e}"}
     
     def parse_results(self):
         """解析仿真结果 - 使用swbpy2读取实验数据（含cmd文件内容）"""
@@ -256,7 +263,7 @@ class TCADProjectParser:
         # 使用full模式获取cmd文件内容
         swb_info = self._parse_swb_project("full")
         
-        if swb_info:
+        if swb_info and "error" not in swb_info:
             results.append(f"=== 仿真流程 ===")
             results.append(f"  工具节点: {', '.join(swb_info['tools'])}")
             results.append("")
@@ -311,9 +318,12 @@ class TCADProjectParser:
                 
                 results.append("")
         else:
-            # 如果swbpy2不可用，回退到文件扫描方式
+            if swb_info and "error" in swb_info:
+                results.append(f"=== 检测失败 ===")
+                results.append(f"  {swb_info['error']}")
+                results.append("")
             results.append(f"=== [文件扫描模式] ===")
-            results.append(f"  swbpy2不可用，使用文件扫描方式")
+            results.append(f"  使用文件扫描方式检测项目信息")
             results.append("")
             
             nodes = self._parse_gtree()

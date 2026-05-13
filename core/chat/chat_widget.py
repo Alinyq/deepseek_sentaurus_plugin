@@ -1,225 +1,239 @@
 """
-TCAD 聊天对话框 - 使用Upsonic Agent/Task标准方式
+TCAD 聊天对话框 - 标准AI对话布局
 """
 import os
 import json
 import configparser
+import markdown
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QLabel, QFrame, QScrollArea, QMessageBox, QFileDialog
+    QPushButton, QLabel, QTextBrowser, QFrame, QScrollArea, QMessageBox
 )
-from PyQt6.QtCore import Qt, QThread
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QTextOption
 
 from core.chat.upsonic_client import UpsonicClient
 from core.chat import tcad_tools as tcad_tools_module
 
+_MARKDOWN_CSS = """
+<style>
+body { font-family: 'WenQuanYi Micro Hei', 'Noto Sans CJK SC', sans-serif; font-size: 13px; }
+h1 { font-size: 19px; font-weight: bold; margin-top: 16px; margin-bottom: 8px; color: #1a1a2e; }
+h2 { font-size: 17px; font-weight: bold; margin-top: 14px; margin-bottom: 6px; color: #16213e; }
+h3 { font-size: 15px; font-weight: bold; margin-top: 12px; margin-bottom: 4px; color: #0f3460; }
+h4 { font-size: 14px; font-weight: bold; margin-top: 10px; margin-bottom: 4px; }
+h5 { font-size: 13px; font-weight: bold; }
+h6 { font-size: 12px; font-weight: bold; }
+p { margin: 4px 0; line-height: 1.6; }
+code { font-family: 'Courier New', monospace; font-size: 12px; background-color: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+pre { background-color: #f6f8fa; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+pre code { background-color: transparent; padding: 0; }
+ul, ol { margin: 4px 0; padding-left: 24px; }
+li { margin: 2px 0; line-height: 1.6; }
+blockquote { border-left: 4px solid #ddd; margin: 8px 0; padding: 8px 16px; color: #6a737d; background-color: #f9f9f9; }
+table { border-collapse: collapse; margin: 8px 0; width: 100%%; }
+th, td { border: 1px solid #ddd; padding: 6px 12px; text-align: left; }
+th { background-color: #f2f2f2; font-weight: bold; }
+hr { border: none; border-top: 1px solid #ddd; margin: 12px 0; }
+a { color: #0366d6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+"""
 
-class ChatMessageBubble(QFrame):
-    """消息气泡组件"""
 
-    def __init__(self, is_user: bool = False, parent=None):
+def _render_md(text: str, color: str = "#333333") -> str:
+    html = markdown.markdown(
+        text,
+        extensions=['tables', 'fenced_code', 'nl2br'],
+        extension_configs={
+            'fenced_code': {'lang_prefix': 'language-'},
+        }
+    )
+    return html
+
+
+class ChatMessageBubble(QWidget):
+    """单条消息气泡"""
+
+    def __init__(self, text: str, is_user: bool = False, parent=None):
         super().__init__(parent)
         self.is_user = is_user
+        self._raw_text = text
         self._setup_ui()
+        if text:
+            self.set_text(text)
 
     def _setup_ui(self):
-        self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
-
-        bg = "#e3f2fd" if self.is_user else "#f5f5f5"
-        self.setStyleSheet(f"QFrame {{ background-color: {bg}; border-radius: 8px; }}")
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(0)
 
         self.label = QLabel()
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.label.setOpenExternalLinks(True)
+
+        if self.is_user:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #dcf8c6;
+                    border-radius: 8px;
+                }
+            """)
+            layout.setContentsMargins(48, 10, 16, 10)
+        else:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #ffffff;
+                    border: 1px solid #e8e8e8;
+                    border-radius: 8px;
+                }
+            """)
+            layout.setContentsMargins(16, 10, 48, 10)
+
         layout.addWidget(self.label)
 
     def set_text(self, text: str):
-        self.label.setText(text)
+        self._raw_text = text
+        color = "#1a1a1a" if self.is_user else "#333333"
+        self.label.setText(_render_md(text, color))
 
-    def append_text(self, text: str):
-        current = self.label.text()
-        self.label.setText(current + text)
+    def append_text(self, token: str):
+        self._raw_text += token
+        color = "#1a1a1a" if self.is_user else "#333333"
+        self.label.setText(_render_md(self._raw_text, color))
 
-
-class ChatWorker(QThread):
-    """消息发送后台线程"""
-
-    def __init__(self, client: UpsonicClient, message: str):
-        super().__init__()
-        self.client = client
-        self.message = message
-
-    def run(self):
-        self.client.send_message(self.message)
+    def finalize(self):
+        color = "#1a1a1a" if self.is_user else "#333333"
+        self.label.setText(_render_md(self._raw_text, color))
 
 
 class ChatWidget(QWidget):
-    """聊天主组件 - 支持项目路径管理"""
+    """聊天主组件"""
 
     def __init__(self, project_path: str = None, parent=None):
         super().__init__(parent)
         self.project_path = project_path or os.getcwd()
         self.client = None
-        self.worker = None
         self.current_bubble = None
         self.current_text = ""
+        self._scroll_to_bottom_enabled = True
         self._setup_ui()
         self._init_client()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # 顶部标题栏
         header = QFrame()
-        header.setStyleSheet("background-color: #1976d2; padding: 8px;")
+        header.setStyleSheet("background-color: #1976d2;")
+        header.setMinimumHeight(40)
+        header.setMaximumHeight(40)
         header_layout = QHBoxLayout(header)
-        title = QLabel(" TCAD AI 智能对话 (Upsonic Agent)")
+        header_layout.setContentsMargins(12, 0, 12, 0)
+        title = QLabel(" TCAD AI 智能对话")
         title.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        clear_btn = QPushButton("清空对话")
+        clear_btn = QPushButton("清空")
         clear_btn.setStyleSheet("""
             QPushButton { background-color: #1565c0; color: white; border: none;
-                         padding: 5px 15px; border-radius: 4px; }
+                         padding: 4px 12px; border-radius: 4px; font-size: 12px; }
             QPushButton:hover { background-color: #0d47a1; }
         """)
         clear_btn.clicked.connect(self.clear_chat)
         header_layout.addWidget(clear_btn)
-        layout.addWidget(header)
+        main_layout.addWidget(header)
 
-        # 项目路径栏
-        path_frame = QFrame()
-        path_frame.setStyleSheet("QFrame { background-color: #e8f5e9; border-bottom: 1px solid #c8e6c9; padding: 6px; }")
-        path_layout = QHBoxLayout(path_frame)
-        path_layout.addWidget(QLabel("项目路径："))
-        self.path_input = QLineEdit(self.project_path)
-        self.path_input.setStyleSheet("""
-            QLineEdit { border: 1px solid #a5d6a7; border-radius: 4px; padding: 4px 8px; }
-            QLineEdit:focus { border-color: #4caf50; }
-        """)
-        path_layout.addWidget(self.path_input)
-
-        browse_btn = QPushButton("浏览")
-        browse_btn.clicked.connect(self._browse_project)
-        path_layout.addWidget(browse_btn)
-
-        detect_btn = QPushButton("检测项目")
-        detect_btn.clicked.connect(self._detect_project)
-        path_layout.addWidget(detect_btn)
-
-        load_btn = QPushButton("加载信息")
-        load_btn.clicked.connect(self._load_project_info)
-        path_layout.addWidget(load_btn)
-        layout.addWidget(path_frame)
-
-        # 消息显示区
+        # 消息滚动区域
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("border: none; background-color: #fafafa;")
+        self.scroll.setStyleSheet("QScrollArea { border: none; background-color: #f5f5f5; }")
 
+        # 消息容器 - 使用简单的 QWidget + QVBoxLayout
         self.msg_container = QWidget()
         self.msg_layout = QVBoxLayout(self.msg_container)
-        self.msg_layout.setContentsMargins(10, 10, 10, 10)
-        self.msg_layout.setSpacing(8)
-        self.msg_layout.addStretch()
+        self.msg_layout.setContentsMargins(8, 8, 8, 8)
+        self.msg_layout.setSpacing(4)
+        self.msg_layout.addStretch(1)
 
         self.scroll.setWidget(self.msg_container)
-        layout.addWidget(self.scroll)
+        main_layout.addWidget(self.scroll, 1)
 
-        # 输入区
+        # 监听滚动条范围变化，自动吸底
+        vbar = self.scroll.verticalScrollBar()
+        vbar.rangeChanged.connect(self._on_scroll_range_changed)
+
+        # 底部输入区
         input_frame = QFrame()
-        input_frame.setStyleSheet("QFrame { background-color: white; border-top: 1px solid #e0e0e0; padding: 10px; }")
+        input_frame.setStyleSheet("background-color: white; border-top: 1px solid #e0e0e0;")
+        input_frame.setMinimumHeight(48)
+        input_frame.setMaximumHeight(48)
         input_layout = QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(8, 6, 8, 6)
+        input_layout.setSpacing(8)
 
         self.input = QLineEdit()
-        self.input.setPlaceholderText("请输入您关于TCAD项目的问题... (按回车发送)")
-        self.input.setMinimumHeight(40)
+        self.input.setPlaceholderText("输入消息... (Enter发送)")
+        self.input.setFixedHeight(36)
         self.input.setStyleSheet("""
-            QLineEdit { border: 1px solid #bdbdbd; border-radius: 20px;
-                       padding: 0 15px; font-size: 13px; }
-            QLineEdit:focus { border-color: #1976d2; }
+            QLineEdit { border: 1px solid #d0d0d0; border-radius: 18px;
+                       padding: 0 16px; font-size: 13px; background: #fafafa; }
+            QLineEdit:focus { border-color: #1976d2; background: white; }
         """)
         self.input.returnPressed.connect(self.send)
-        input_layout.addWidget(self.input)
+        input_layout.addWidget(self.input, 1)
 
         self.send_btn = QPushButton("发送")
-        self.send_btn.setMinimumSize(80, 40)
+        self.send_btn.setFixedSize(80, 36)
         self.send_btn.setStyleSheet("""
             QPushButton { background-color: #1976d2; color: white; border: none;
-                         border-radius: 20px; font-weight: bold; }
+                         border-radius: 18px; font-weight: bold; font-size: 13px; }
             QPushButton:hover { background-color: #1565c0; }
-            QPushButton:disabled { background-color: #90caf9; }
+            QPushButton:disabled { background-color: #b0bec5; }
         """)
         self.send_btn.clicked.connect(self.send)
         input_layout.addWidget(self.send_btn)
-        layout.addWidget(input_frame)
+        main_layout.addWidget(input_frame)
 
         # 状态栏
         status_frame = QFrame()
-        status_frame.setStyleSheet("background-color: #f5f5f5; padding: 5px 10px;")
+        status_frame.setStyleSheet("background-color: #fafafa; border-top: 1px solid #e0e0e0;")
+        status_frame.setMinimumHeight(24)
+        status_frame.setMaximumHeight(24)
         s_layout = QHBoxLayout(status_frame)
-        s_layout.setContentsMargins(5, 2, 5, 2)
-        self.status = QLabel("正在初始化...")
-        self.status.setStyleSheet("color: #666; font-size: 11px;")
+        s_layout.setContentsMargins(10, 0, 10, 0)
+        self.status = QLabel("就绪")
+        self.status.setStyleSheet("color: #888; font-size: 11px;")
         s_layout.addWidget(self.status)
-        layout.addWidget(status_frame)
+        main_layout.addWidget(status_frame)
 
-    def _browse_project(self):
-        d = QFileDialog.getExistingDirectory(self, "选择SWB项目目录")
-        if d:
-            self.path_input.setText(d)
-            self.project_path = d
-            if self.client:
-                self.client.project_path = d
-                self.status.setText(f" 项目: {d}")
-
-    def _detect_project(self):
-        current = self.path_input.text() or os.getcwd()
-        if os.path.isfile(os.path.join(current, "gtree.dat")):
-            self.project_path = os.path.abspath(current)
-            self.status.setText(f" 已检测到: {self.project_path}")
-            self._add_bubble(f"检测到SWB项目：\n{self.project_path}", is_user=False)
-        else:
-            parent = os.path.dirname(current)
-            for root, dirs, files in os.walk(parent):
-                if "gtree.dat" in files:
-                    self.project_path = os.path.abspath(root)
-                    self.path_input.setText(self.project_path)
-                    self.status.setText(f" 已检测到: {self.project_path}")
-                    self._add_bubble(f"检测到SWB项目：\n{self.project_path}", is_user=False)
-                    return
-            self.status.setText(" 未找到SWB项目")
-            self._add_bubble("在当前目录及父目录中未找到SWB项目(gtree.dat)。", is_user=False)
+    def set_project_path(self, path: str):
+        self.project_path = path
+        if self.client:
+            self.client.project_path = path
 
     def _load_project_info(self):
-        project_path = self.path_input.text()
+        project_path = self.project_path
         if not project_path:
             project_path = os.getcwd()
-        self.project_path = project_path
-        if self.client:
-            self.client.project_path = project_path
 
         try:
-            import subprocess
-            from core.chat.tcad_tools import _run_tool
             os.environ["TCAD_PROJECT_PATH"] = project_path
             info = tcad_tools_module.get_project_info()
             data = json.loads(info)
-            summary = (f"项目名称: {data.get('project_name', '未知')}\n"
-                       f"仿真工具: {', '.join(data.get('tools', []))}\n"
-                       f"实验数量: {data.get('experiment_count', 0)}\n"
-                       f"参数(自变量): {', '.join(data.get('param_names', []))}\n"
-                       f"变量(因变量): {', '.join(data.get('var_names', []))}")
+            summary = (f"**项目名称**: {data.get('project_name', '未知')}\n\n"
+                       f"**仿真工具**: {', '.join(data.get('tools', []))}\n\n"
+                       f"**实验数量**: {data.get('experiment_count', 0)}\n\n"
+                       f"**参数(自变量)**: {', '.join(data.get('param_names', []))}\n\n"
+                       f"**变量(因变量)**: {', '.join(data.get('var_names', []))}")
             self._add_bubble(summary, is_user=False)
-            self.status.setText(f" 已加载: {data.get('project_name', '')}")
-        except:
-            self._add_bubble(f"加载项目信息失败：\n{info}", is_user=False)
+            self.status.setText(f"已加载: {data.get('project_name', '')}")
+        except Exception as e:
+            self._add_bubble(f"加载项目信息失败：\n{e}", is_user=False)
 
     def _init_client(self):
         try:
@@ -230,7 +244,7 @@ class ChatWidget(QWidget):
 
             client_cfg = {
                 'api_key': config.get('deepseek', 'api_key', fallback=''),
-                'base_url': config.get('deepseek', 'base_url', fallback='https://api.deepseek.com') + '/v1',
+                'base_url': config.get('deepseek', 'base_url', fallback='https://api.deepseek.com'),
                 'model': config.get('deepseek', 'model', fallback='deepseek-chat'),
                 'project_path': self.project_path,
             }
@@ -239,24 +253,38 @@ class ChatWidget(QWidget):
             self.client.token_received.connect(self.on_token)
             self.client.response_complete.connect(self.on_complete)
             self.client.error_occurred.connect(self.on_error)
-            self.client.tool_call_started.connect(self.on_tool_call)
-            self.client.tool_call_result.connect(self.on_tool_result)
 
-            # 收集所有@tool装饰的工具函数
-            tools = []
-            for name in dir(tcad_tools_module):
-                obj = getattr(tcad_tools_module, name)
-                if callable(obj) and hasattr(obj, '__upsonic_metadata__'):
-                    tools.append(obj)
+            tools = [
+                tcad_tools_module.get_project_info,
+                tcad_tools_module.get_experiment_list,
+                tcad_tools_module.get_cmd_files,
+                tcad_tools_module.get_param_names,
+                tcad_tools_module.get_var_names,
+                tcad_tools_module.get_param_value,
+                tcad_tools_module.set_param_value,
+                tcad_tools_module.get_experiment_status,
+                tcad_tools_module.run_experiment,
+                tcad_tools_module.run_all_experiments,
+                tcad_tools_module.add_experiment,
+                tcad_tools_module.delete_experiment,
+                tcad_tools_module.check_errors,
+                tcad_tools_module.get_node_list,
+                tcad_tools_module.read_file,
+                tcad_tools_module.write_file,
+                tcad_tools_module.list_files,
+            ]
 
+            print(f"[DEBUG] Found {len(tools)} tools")
             self.client.add_tools(tools)
-            self.status.setText(" 就绪")
+            self.status.setText("就绪")
             self.input.setEnabled(True)
             self.send_btn.setEnabled(True)
 
         except Exception as e:
-            self.status.setText(f" 错误: {e}")
-            QMessageBox.warning(self, "警告", f"聊天组件初始化失败：\n{e}\n\n请确保已安装upsonic库")
+            import traceback
+            error_msg = f"聊天组件初始化失败：\n{e}\n\n{traceback.format_exc()}"
+            self.status.setText(f"错误: {e}")
+            QMessageBox.warning(self, "警告", error_msg)
 
     def send(self):
         msg = self.input.text().strip()
@@ -267,7 +295,7 @@ class ChatWidget(QWidget):
         self.input.setEnabled(False)
         self.send_btn.setEnabled(False)
 
-        self.project_path = self.path_input.text() or os.getcwd()
+        self.project_path = self.project_path or os.getcwd()
         if self.client:
             self.client.project_path = self.project_path
 
@@ -275,17 +303,29 @@ class ChatWidget(QWidget):
         self.current_text = ""
         self.current_bubble = None
 
-        self.worker = ChatWorker(self.client, msg)
-        self.worker.start()
+        self.client.send_message(msg)
 
     def _add_bubble(self, text: str, is_user: bool = False) -> ChatMessageBubble:
-        self.msg_layout.removeItem(self.msg_layout.takeAt(self.msg_layout.count() - 1))
-        bubble = ChatMessageBubble(is_user=is_user)
-        bubble.set_text(text)
+        # 移除底部的 stretch，让新气泡直接添加在底部
+        if self.msg_layout.count() > 0:
+            last = self.msg_layout.itemAt(self.msg_layout.count() - 1)
+            if last and last.spacerItem():
+                self.msg_layout.removeItem(last)
+
+        bubble = ChatMessageBubble(text, is_user)
         self.msg_layout.addWidget(bubble)
-        self.msg_layout.addStretch()
-        self._scroll_to_bottom()
+
+        # 重新添加 stretch 在底部
+        self.msg_layout.addStretch(1)
+
+        # 滚动到底部
+        QTimer.singleShot(50, self._scroll_to_bottom)
         return bubble
+
+    def _on_scroll_range_changed(self, min_val, max_val):
+        """内容高度变化时自动吸底"""
+        if self._scroll_to_bottom_enabled:
+            self.scroll.verticalScrollBar().setValue(max_val)
 
     def _scroll_to_bottom(self):
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
@@ -295,32 +335,28 @@ class ChatWidget(QWidget):
         if self.current_bubble is None:
             self.current_bubble = self._add_bubble("", is_user=False)
         self.current_bubble.append_text(token)
-        self._scroll_to_bottom()
 
     def on_complete(self, response: str):
+        if self.current_bubble:
+            self.current_bubble.finalize()
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
-        self.status.setText(" 就绪")
+        self.status.setText("就绪")
         self.current_bubble = None
+        self._scroll_to_bottom()
 
     def on_error(self, error: str):
         self._add_bubble(f"错误：{error}", is_user=False)
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
-        self.status.setText(" 错误")
+        self.status.setText("错误")
         self.current_bubble = None
-
-    def on_tool_call(self, tool_name: str):
-        self.status.setText(f" 正在调用工具: {tool_name}")
-
-    def on_tool_result(self, tool_name: str, result: str):
-        self.status.setText(f" 工具 {tool_name} 执行完成")
 
     def clear_chat(self):
         if self.client:
             self.client.clear_history()
-        while self.msg_layout.count() > 1:
+        while self.msg_layout.count() > 0:
             item = self.msg_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.status.setText(" 已清空")
+        self.status.setText("已清空")

@@ -370,6 +370,17 @@ class DeepSeekTCADGUI(QMainWindow):
 
         top_input = QVBoxLayout()
 
+        # 文件选择行
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(QLabel("结果文件："))
+        self.result_file_entry = QLineEdit()
+        self.result_file_entry.setPlaceholderText("选择结果文件（.plt/.log/.cmd 等）")
+        file_layout.addWidget(self.result_file_entry)
+        browse_result_btn = QPushButton("浏览")
+        browse_result_btn.clicked.connect(self.browse_result_file)
+        file_layout.addWidget(browse_result_btn)
+        top_input.addLayout(file_layout)
+
         detect_btn = QPushButton("自动检测结果文件")
         detect_btn.clicked.connect(self.auto_detect_results)
         top_input.addWidget(detect_btn)
@@ -408,6 +419,19 @@ class DeepSeekTCADGUI(QMainWindow):
         main_layout.addLayout(btn_layout)
 
         self.tabs.addTab(tab, "结果分析")
+
+    def browse_result_file(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "选择结果文件", "", "结果文件 (*.plt *.log *.cmd *.tdr);;所有文件 (*)"
+        )
+        if f:
+            self.result_file_entry.setText(f)
+            try:
+                with open(f, 'r', encoding='utf-8', errors='ignore') as fh:
+                    content = fh.read()
+                self.result_browser.setPlainText(content)
+            except Exception as e:
+                self.result_browser.setPlainText(f"无法读取文件：{e}")
 
     def _on_analyze_btn(self):
         if self._is_streaming:
@@ -621,7 +645,7 @@ class DeepSeekTCADGUI(QMainWindow):
     # --- 对话框 ---
     def create_chat_tab(self):
         from core.chat.chat_widget import ChatWidget
-        chat = ChatWidget()
+        chat = ChatWidget(project_path=self.project_path)
         self.tabs.addTab(chat, "AI对话")
 
     def browse_project(self):
